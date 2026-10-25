@@ -268,6 +268,18 @@ with st.sidebar:
         key="selected_palette",
     )
 
+    # Optional lighting effect derived from the calculated fractal.
+    # It changes display colouring only; it does not recalculate or
+    # modify the underlying complex coordinates or escape-time results.
+    boundary_shading = st.checkbox(
+        "Boundary shading",
+        value=False,
+        help=(
+            "Add subtle contrast around intricate fractal boundaries. "
+            "Disable it to restore the original smooth colour rendering."
+        ),
+    )
+
     resolution = st.select_slider(
         "Horizontal resolution",
         options=[400, 600, 800, 1000, 1200],
@@ -337,6 +349,35 @@ center_x = st.session_state.center_x
 center_y = st.session_state.center_y
 span_x = st.session_state.span_x
 
+# ------------------------------------------------------------
+# ADAPTIVE ITERATION BUDGET
+# ------------------------------------------------------------
+# The user's slider defines the base iteration budget. At the default
+# view, we use it unchanged so the initial render stays just as fast.
+#
+# As magnification increases, points near intricate boundaries often
+# need more recurrence steps before their orbits escape. Gradually
+# increasing the budget helps reveal these details at deeper zooms.
+#
+# Every doubling of magnification adds 0.25 to the multiplier, up to
+# 2.5x. The cap prevents the adaptive budget from growing without limit.
+# The effective value is passed into calculate_view(), so Streamlit's
+# cache continues to distinguish results calculated at different budgets.
+base_magnification = 3.2 / span_x
+zoom_levels = max(0.0, float(np.log2(max(1.0, base_magnification))))
+
+iteration_multiplier = min(
+    1.5,
+    1.0 + 0.10 * zoom_levels,
+)
+
+# Never exceed 4,000 iterations automatically, even if the slider's
+# base value is already high. The user's slider remains the minimum.
+effective_iterations = min(
+    4000,
+    max(iterations, round(iterations * iteration_multiplier)),
+)
+
 # Avoid requesting a zero-width region from floating-point underflow.
 if not np.isfinite(span_x) or span_x <= 0:
     st.error("The requested zoom is outside the supported numerical range.")
@@ -360,7 +401,7 @@ with st.spinner("Calculating the complex plane…"):
     result = calculate_view(
         width,
         height,
-        iterations,
+        effective_iterations,
         x_min,
         x_max,
         y_min,
@@ -398,6 +439,60 @@ colour_field = np.where(
     np.nan,
 ).astype(np.float32)
 
+# ------------------------------------------------------------
+# OPTIONAL BOUNDARY SHADING
+# ------------------------------------------------------------
+# Estimate local changes in the smooth escape-time field using
+# neighbouring pixels. Larger changes often occur near intricate
+# boundaries, where a little extra contrast can reveal structure.
+#
+# The field is normalized only for this visual effect. The original
+# escape iterations, smooth values, and coordinate precision remain
+# untouched. This is a display enhancement, not a distance estimate.
+if boundary_shading:
+    # Only escaped points have valid smooth escape-time values.
+    valid = result.escaped & np.isfinite(colour_field)
+
+    if np.any(valid):
+        # Normalize valid colour values to a consistent 0-to-1 range.
+        # Handle a constant field safely to avoid division by zero.
+        low = float(np.min(colour_field[valid]))
+        high = float(np.max(colour_field[valid]))
+        span = high - low
+
+        if span > 0.0:
+            normalized = (colour_field - low) / span
+        else:
+            normalized = np.zeros_like(colour_field, dtype=np.float32)
+
+        # NaNs cannot be passed through np.gradient reliably. Fill
+        # non-escaped pixels temporarily, then restore their NaNs
+        # after shading so the dark interior background is preserved.
+        gradient_input = np.where(valid, normalized, 0.0).astype(
+            np.float32
+        )
+
+        # Estimate horizontal and vertical changes in the colour field.
+        # These arrays are display data, not additional fractal orbits.
+        gradient_y, gradient_x = np.gradient(gradient_input)
+
+        # Gradient magnitude indicates how quickly the field changes.
+        # Normalize conservatively and clamp the lighting effect so
+        # strong edges gain contrast without overwhelming the palette.
+        edge_strength = np.sqrt(
+            gradient_x * gradient_x + gradient_y * gradient_y
+        )
+        edge_strength = np.clip(edge_strength * 4.0, 0.0, 1.0)
+
+        # Darken the steepest transitions by at most 18 percent.
+        # This creates subtle boundary contrast without fake geometry.
+        shaded = normalized * (1.0 - 0.18 * edge_strength)
+
+        # Keep the display in a stable range across different views.
+        # Restore NaN for all points that did not escape.
+        colour_field = np.where(valid, shaded, np.nan).astype(np.float32)
+
+
 # Construct the Plotly figure from the actual calculated data.
 fig = go.Figure(
     data=[
@@ -405,6 +500,8 @@ fig = go.Figure(
             x=x_values,
             y=y_values,
             z=colour_field,
+            zmin=0.0 if boundary_shading else None,
+            zmax=1.0 if boundary_shading else None,
             autocolorscale=False,
             colorscale=FRACTALIS_PALETTES.get(
                 st.session_state.selected_palette,
@@ -437,11 +534,15 @@ fig.update_layout(
     plot_bgcolor="#080810",
     height=700,
     margin={"l": 55, "r": 35, "t": 25, "b": 55},
+
+    
+
     xaxis={
         "title": "Real axis · Re(c)",
         "gridcolor": "#242033",
         "zerolinecolor": "#65577c",
         "constrain": "domain",
+        
     },
     yaxis={
         "title": "Imaginary axis · Im(c)",
@@ -450,6 +551,7 @@ fig.update_layout(
         "scaleanchor": "x",
         "scaleratio": 1,
     },
+    
 )
 
 # ------------------------------------------------------------
@@ -471,11 +573,16 @@ fig.update_layout(
 # handler below also records handled coordinates to prevent replay.
 canvas_key = "mandelbrot_click_canvas"
 
+# Render the completed figure directly, exactly once.
+# Avoiding a temporary preview and placeholder replacement prevents
+# the extra chart lifecycle that caused the visible transition.
+# Keep the component key stable so existing zoom-event handling works.
 clicked_points = plotly_events(
     fig,
     click_event=True,
     select_event=False,
     hover_event=False,
+    relayout_event=True,
     override_height=700,
     override_width="100%",
     key=canvas_key,
@@ -491,7 +598,51 @@ clicked_points = plotly_events(
 # the magnification. Save the previous view so the Back button
 # can restore the previous centre and scale.
 
-if clicked_points:
+if (
+    isinstance(clicked_points, dict)
+    and clicked_points.get("event") == "relayout"
+):
+    data = clicked_points.get("data", {})
+
+    def get_axis_range(axis):
+        pair = data.get(f"{axis}.range")
+        if pair is None:
+            low = data.get(f"{axis}.range[0]")
+            high = data.get(f"{axis}.range[1]")
+            if low is not None and high is not None:
+                pair = [low, high]
+        if pair is None or len(pair) != 2:
+            return None
+        try:
+            values = sorted((float(pair[0]), float(pair[1])))
+        except (TypeError, ValueError):
+            return None
+        if not all(np.isfinite(v) for v in values):
+            return None
+        return values if values[1] > values[0] else None
+
+    xr = get_axis_range("xaxis")
+    yr = get_axis_range("yaxis")
+
+    if xr is not None and yr is not None:
+        x0, x1 = xr
+        y0, y1 = yr
+        new_span_x = x1 - x0
+        signature = (x0, x1, y0, y1)
+
+        # Only treat a genuine inward rectangular zoom as a new view.
+        if (
+            new_span_x < span_x
+            and signature != st.session_state.get("_last_handled_box")
+        ):
+            st.session_state["_last_handled_box"] = signature
+            save_view()
+            st.session_state.center_x = (x0 + x1) / 2
+            st.session_state.center_y = (y0 + y1) / 2
+            st.session_state.span_x = new_span_x
+            st.rerun()
+
+elif clicked_points:
     selected = clicked_points[0]
 
     selected_x = selected.get("x")
@@ -546,7 +697,12 @@ metric_b.metric(
 
 metric_c.metric(
     "Iteration budget",
-    f"{iterations:,}",
+    f"{effective_iterations:,}",
+    delta=(
+        f"+{effective_iterations - iterations:,} adaptive"
+        if effective_iterations > iterations
+        else "Base budget"
+    ),
 )
 
 st.caption(
