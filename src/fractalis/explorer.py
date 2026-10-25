@@ -438,10 +438,13 @@ fig.update_layout(
 # view a fresh component identity and prevents the previous click
 # from being replayed after the next zoom.
 
-canvas_key = (
-    f"mandelbrot_click_{center_x:.12g}_"
-    f"{center_y:.12g}_{span_x:.12g}"
-)
+# Keep the interactive component identity stable across zooms.
+# This gives Streamlit a chance to update the existing chart instead
+# of destroying it and mounting a brand-new component each time.
+#
+# Because the component may retain its previous click event, the
+# handler below also records handled coordinates to prevent replay.
+canvas_key = "mandelbrot_click_canvas"
 
 clicked_points = plotly_events(
     fig,
@@ -475,15 +478,30 @@ if clicked_points:
 
         # Reject invalid coordinates before changing session state.
         if np.isfinite(selected_x) and np.isfinite(selected_y):
-            # Avoid redundant reruns for a click exactly at the centre.
-            if selected_x != center_x or selected_y != center_y:
-                save_view()
+            # Remember the most recently handled click coordinates.
+            # A stable component key can preserve an old event during a
+            # rerun, so ignore an event that we have already processed.
+            click_signature = (selected_x, selected_y)
+            last_handled_click = st.session_state.get(
+                "_last_handled_click"
+            )
 
+            # Avoid both replaying the same click and zooming into the
+            # current centre, which would not change the visible region.
+            if (
+                click_signature != last_handled_click
+                and (selected_x != center_x or selected_y != center_y)
+            ):
+                # Record the event BEFORE changing the view. This ensures
+                # a rerun cannot process the same event a second time.
+                st.session_state["_last_handled_click"] = click_signature
+
+                save_view()
                 st.session_state.center_x = selected_x
                 st.session_state.center_y = selected_y
                 st.session_state.span_x *= 0.5
 
-                # Trigger a fresh calculation at the new coordinates.
+                # Recalculate at the new coordinates.
                 st.rerun()
 
 # MATHEMATICAL STATUS
