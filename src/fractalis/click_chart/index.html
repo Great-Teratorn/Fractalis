@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="https://cdn.plot.ly/plotly-3.0.1.min.js"></script>
+  <style>
+    html, body, #chart {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 720px;
+      background: transparent;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <div id="chart"></div>
+  <script>
+    const chart = document.getElementById("chart");
+    let lastFigure = null;
+
+    function send(type, extra = {}) {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type,
+        ...extra
+      }, "*");
+    }
+
+    function render(args) {
+      if (!window.Plotly || !args.figure_json) return;
+
+      try {
+        const figure = JSON.parse(args.figure_json);
+        lastFigure = figure;
+
+        Plotly.react(
+          chart,
+          figure.data,
+          {
+            ...figure.layout,
+            autosize: true,
+            height: 700
+          },
+          {
+            responsive: true,
+            displaylogo: false
+          }
+        );
+      } catch (error) {
+        console.error("FRACTALIS chart error:", error);
+      }
+    }
+
+    chart.on("plotly_click", function(event) {
+      if (!event.points || !event.points.length) return;
+
+      const point = event.points[0];
+      const x = Number(point.x);
+      const y = Number(point.y);
+
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        send("streamlit:setComponentValue", {
+          value: { x, y, nonce: Date.now() }
+        });
+      }
+    });
+
+    window.addEventListener("message", function(event) {
+      if (event.data.type === "streamlit:render") {
+        render(event.data.args || {});
+      }
+    });
+
+    send("streamlit:componentReady", { apiVersion: 1 });
+    send("streamlit:setFrameHeight", { height: 720 });
+  </script>
+</body>
+</html>
