@@ -360,11 +360,18 @@ y_values = np.linspace(y_max, y_min, height)
 
 # Escaped points receive their smooth escape-time colour.
 # Points that did not escape are shown against the dark background.
+# Plotly only needs display precision for the final colour field.
+# Keep the underlying Mandelbrot calculation and complex-plane
+# coordinates at float64/complex128 precision for accurate zooming.
+#
+# float32 halves the colour array's memory footprint and, in our
+# benchmark, substantially reduced Plotly figure creation time and
+# JSON payload size. NaN values are preserved for non-escaped points.
 colour_field = np.where(
     result.escaped,
     result.smooth_iterations,
     np.nan,
-)
+).astype(np.float32)
 
 # Construct the Plotly figure from the actual calculated data.
 fig = go.Figure(

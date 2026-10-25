@@ -29,6 +29,7 @@ finite computation proves its orbit is bounded forever.
 from dataclasses import dataclass
 
 import numpy as np
+from numba import njit
 from numpy.typing import NDArray
 
 
@@ -171,6 +172,100 @@ def complex_grid(
 # SECTION 4 — Calculate Mandelbrot escape times
 # ============================================================
 
+
+
+# ============================================================
+# SECTION 4 — Compiled Mandelbrot calculation kernel
+# ============================================================
+# Numba compiles this ordinary Python function into machine code.
+# cache=True stores compiled specializations on disk when supported,
+# reducing startup compilation work in subsequent application runs.
+#
+# IMPORTANT:
+# - Keep this function focused on numerical work.
+# - Do not put Streamlit, Plotly, or session-state operations here.
+# - The public mandelbrot() function below remains the validated API.
+
+@njit(cache=True)
+def _mandelbrot_kernel(real, imag, max_iterations):
+    """Calculate escape counts and smooth values using compiled loops."""
+
+    # The coordinate arrays define the exact pixel sampling:
+    # real runs from left to right; imag runs from top to bottom.
+    height = imag.size
+    width = real.size
+
+    # Zero means that the orbit did not escape within the iteration
+    # budget. This preserves the existing public result convention.
+    escape_iterations = np.zeros((height, width), dtype=np.int32)
+
+    # Non-escaped pixels retain NaN for smooth colouring.
+    smooth_iterations = np.full(
+        (height, width), np.nan, dtype=np.float64
+    )
+
+    # Visit each pixel directly. Unlike the previous implementation,
+    # this does not repeatedly allocate active-index arrays or copy
+    # the active portions of the complex orbit array.
+    for row in range(height):
+        ci = imag[row]
+
+        for column in range(width):
+            cr = real[column]
+
+            # Start the Mandelbrot orbit at z = 0 + 0i.
+            zr = 0.0
+            zi = 0.0
+
+            # Iterate this pixel until it escapes or reaches the
+            # configured maximum iteration count.
+            for iteration in range(1, max_iterations + 1):
+
+                # Complex squaring:
+                # (zr + zi*i)^2 = (zr^2 - zi^2) + (2*zr*zi)*i
+                #
+                # Save the old real component before updating either
+                # component. Both updates must use the old orbit.
+                old_zr = zr
+                old_zi = zi
+
+                zr = old_zr * old_zr - old_zi * old_zi + cr
+                zi = 2.0 * old_zr * old_zi + ci
+
+                # A point escapes when |z| > 2, equivalently when
+                # zr^2 + zi^2 > 4. Squared magnitude avoids a
+                # square root for every iteration.
+                magnitude_squared = zr * zr + zi * zi
+
+                if magnitude_squared > 4.0:
+                    # Record the FIRST iteration at which escape
+                    # occurs, matching the original engine.
+                    escape_iterations[row, column] = iteration
+
+                    # Smooth escape-time colouring reduces the
+                    # visible bands produced by integer counts.
+                    #
+                    # mu = n + 1 - log2(log(|z|))
+                    #
+                    # The square root recovers |z| from its squared
+                    # magnitude. This formula is only evaluated for
+                    # points that actually escaped.
+                    smooth_iterations[row, column] = (
+                        iteration
+                        + 1.0
+                        - np.log(np.log(np.sqrt(magnitude_squared)))
+                        / np.log(2.0)
+                    )
+
+                    # Escaped orbits never need another iteration.
+                    break
+
+    # Return plain NumPy arrays; the wrapper constructs the public
+    # FractalResult object and its boolean escape mask.
+    return escape_iterations, smooth_iterations
+
+
+
 def mandelbrot(
     width: int = 1200,
     height: int = 800,
@@ -183,138 +278,33 @@ def mandelbrot(
     """
     Calculate the Mandelbrot escape-time field for a rectangular region.
 
-    Parameters
-    ----------
-    width, height:
-        Number of horizontal and vertical sample points.
-
-    max_iterations:
-        Maximum number of recurrence steps for each orbit.
-
-    x_min, x_max, y_min, y_max:
-        Rectangular region of the complex plane.
-
-    Returns
-    -------
-    FractalResult
-        Iteration counts, escape mask and smooth escape values.
+    The public interface is intentionally unchanged. Existing callers,
+    including the Streamlit explorer and its cache, need no modifications.
     """
 
-    # --------------------------------------------------------
-    # 4.1 Validate the requested calculation.
-    # --------------------------------------------------------
+    # Validate dimensions, iteration count, and coordinate bounds before
+    # allocating arrays or invoking the compiled numerical kernel.
     _validate_parameters(
-        width,
-        height,
-        max_iterations,
-        x_min,
-        x_max,
-        y_min,
-        y_max,
+        width, height, max_iterations,
+        x_min, x_max, y_min, y_max,
     )
 
-    # --------------------------------------------------------
-    # 4.2 Assign a complex parameter to every pixel.
-    # --------------------------------------------------------
-    c = complex_grid(
-        width,
-        height,
-        x_min,
-        x_max,
-        y_min,
-        y_max,
+    # Use the same inclusive coordinate sampling as complex_grid().
+    # This preserves the location represented by every pixel.
+    real = np.linspace(x_min, x_max, width, dtype=np.float64)
+    imag = np.linspace(y_max, y_min, height, dtype=np.float64)
+
+    # Run the compiled calculation. The very first invocation may take
+    # longer because Numba must compile this function for these input
+    # types; later invocations can reuse the compiled version.
+    escape_iterations, smooth_iterations = _mandelbrot_kernel(
+        real, imag, max_iterations
     )
 
-    # --------------------------------------------------------
-    # 4.3 Initialize the orbit z_0 = 0.
-    # --------------------------------------------------------
-    # Each array position represents an independent orbit.
-    z = np.zeros(c.shape, dtype=np.complex128)
+    # The original engine considered a point escaped exactly when its
+    # recorded iteration count was positive. Preserve that convention.
+    escaped = escape_iterations > 0
 
-    # Zero is a sentinel indicating that escape has not been observed.
-    escape_iterations = np.zeros(c.shape, dtype=np.int32)
-
-    # Every point begins active. Once it escapes, it is deactivated.
-    active = np.ones(c.shape, dtype=np.bool_)
-
-    # --------------------------------------------------------
-    # 4.4 Apply the recurrence z_(n+1) = z_n**2 + c.
-    # --------------------------------------------------------
-    for iteration in range(1, max_iterations + 1):
-
-        # If every point has escaped, there is nothing left to compute.
-        if not np.any(active):
-            break
-
-        # Extract only the currently active orbits.
-        active_indices = np.flatnonzero(active)
-        z_active = z.flat[active_indices]
-        c_active = c.flat[active_indices]
-
-        # Perform one iteration of the quadratic polynomial.
-        z_active = z_active * z_active + c_active
-
-        # Write the new orbit values back into the full array.
-        z.flat[active_indices] = z_active
-
-        # ----------------------------------------------------
-        # 4.5 Apply the mathematically justified escape criterion.
-        # ----------------------------------------------------
-        # |z| > 2 is equivalent to Re(z)^2 + Im(z)^2 > 4.
-        # Squared magnitude avoids calculating a square root.
-        magnitude_squared = (
-            z_active.real * z_active.real
-            + z_active.imag * z_active.imag
-        )
-
-        # Identify the points that escaped during this iteration.
-        escaped_now = magnitude_squared > 4.0
-
-        # Record their first escape iteration.
-        newly_escaped_indices = active_indices[escaped_now]
-        escape_iterations.flat[newly_escaped_indices] = iteration
-
-        # These points must never be iterated again.
-        active.flat[newly_escaped_indices] = False
-
-    # --------------------------------------------------------
-    # 4.6 Distinguish observed escape from non-escape.
-    # --------------------------------------------------------
-    # A point can remain active when we exhaust the iteration budget.
-    # That does not prove the orbit remains bounded forever.
-    escaped = ~active
-
-    # --------------------------------------------------------
-    # 4.7 Calculate smooth escape-time estimates.
-    # --------------------------------------------------------
-    # Integer iteration counts produce visible bands when colored.
-    #
-    # For escaped points, a common smooth approximation is:
-    #
-    # mu = n + 1 - log2(log(|z_n|))
-    #
-    # This is useful for visual interpolation. It is not an exact
-    # escape time or an exact distance to the fractal boundary.
-    smooth_iterations = np.full(
-        c.shape,
-        np.nan,
-        dtype=np.float64,
-    )
-
-    # Only evaluate logarithms for points that have actually escaped.
-    escaped_magnitudes = np.abs(z[escaped])
-
-    # Every selected magnitude exceeds 2, so the nested logarithm
-    # is mathematically defined for these finite values.
-    smooth_iterations[escaped] = (
-        escape_iterations[escaped].astype(np.float64)
-        + 1.0
-        - np.log2(np.log(escaped_magnitudes))
-    )
-
-    # --------------------------------------------------------
-    # 4.8 Package the results for the rendering and analysis layers.
-    # --------------------------------------------------------
     return FractalResult(
         escape_iterations=escape_iterations,
         escaped=escaped,
