@@ -19,6 +19,35 @@ matplotlib.use("Agg")
 
 import numpy as np
 import plotly.graph_objects as go
+
+
+# Use Plotly's established scientific colour maps directly.
+# These are separate, predefined gradients rather than approximations.
+import plotly.colors as plotly_colors
+
+FRACTALIS_PALETTES = {
+    "magma": [
+        [0.00, "#10072b"],
+        [0.16, "#35106b"],
+        [0.32, "#612078"],
+        [0.48, "#a52f83"],
+        [0.64, "#e65383"],
+        [0.80, "#ff9368"],
+        [0.92, "#ffd080"],
+        [1.00, "#fff4c2"],
+    ],
+    "inferno": [
+        [0.00, "#000000"],
+        [0.16, "#16051c"],
+        [0.32, "#50102f"],
+        [0.48, "#9c1830"],
+        [0.64, "#e33325"],
+        [0.80, "#ff7017"],
+        [0.92, "#ffc126"],
+        [1.00, "#fff95e"],
+    ],
+}
+
 import streamlit as st
 
 from fractalis.core import mandelbrot
@@ -46,6 +75,28 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+/* Fractalis: readable buttons before hover. */
+div.stButton > button {
+    background: linear-gradient(135deg, #211a35, #302044) !important;
+    color: #f5efff !important;
+    border: 1px solid #7255a4 !important;
+    font-weight: 600 !important;
+    transition: background 180ms ease, border-color 180ms ease,
+                box-shadow 180ms ease, transform 180ms ease !important;
+}
+div.stButton > button p {
+    color: #f5efff !important;
+}
+div.stButton > button:hover {
+    color: #ffffff !important;
+    border-color: #c6a7ff !important;
+    box-shadow: 0 0 16px rgba(166, 115, 255, 0.28) !important;
+    transform: translateY(-1px);
+}
+div.stButton > button:hover p {
+    color: #ffffff !important;
+}
+
     .stApp {
         background:
             radial-gradient(ellipse at 50% 0%, #211438 0%, #090911 65%);
@@ -321,7 +372,11 @@ fig = go.Figure(
             x=x_values,
             y=y_values,
             z=colour_field,
-            colorscale=st.session_state.selected_palette,
+            autocolorscale=False,
+            colorscale=FRACTALIS_PALETTES.get(
+                st.session_state.selected_palette,
+                st.session_state.selected_palette,
+            ),
             hovertemplate=(
                 "Re(c): %{x:.12g}<br>"
                 "Im(c): %{y:.12g}<br>"
@@ -340,6 +395,34 @@ fig = go.Figure(
         )
     ]
 )
+
+
+# Add a denser, nearly invisible navigation layer.
+# Each selectable point maps to a real complex-plane coordinate.
+click_width = min(200, width)
+click_height = max(2, round(click_width * height / width))
+
+click_x = np.linspace(x_min, x_max, click_width)
+click_y = np.linspace(y_max, y_min, click_height)
+click_grid_x, click_grid_y = np.meshgrid(click_x, click_y)
+
+fig.add_trace(
+    go.Scattergl(
+        x=click_grid_x.ravel(),
+        y=click_grid_y.ravel(),
+        mode="markers",
+        marker={
+            "size": 12,
+            "color": "rgba(255,255,255,0.01)",
+        },
+        hoverinfo="skip",
+        showlegend=False,
+        name="Navigation points",
+    )
+)
+
+fig.update_layout(clickmode="event+select")
+
 
 # Style the graph and keep equal scales on both complex-plane axes.
 fig.update_layout(
@@ -363,12 +446,34 @@ fig.update_layout(
     },
 )
 
-# Display the figure with Streamlit's standard Plotly component.
-st.plotly_chart(
+# Display the graph and ask Streamlit to report selected scatter points.
+canvas_key = (
+    f"mandelbrot_display_{center_x:.12g}_"
+    f"{center_y:.12g}_{span_x:.12g}"
+)
+
+chart_event = st.plotly_chart(
     fig,
     use_container_width=True,
-    key="mandelbrot_display",
+    key=canvas_key,
+    on_select="rerun",
+    selection_mode="points",
 )
+
+# Re-centre the view on a selected point and zoom in by 2x.
+if chart_event and chart_event.selection and chart_event.selection.points:
+    selected = chart_event.selection.points[0]
+
+    if selected.get("x") is not None and selected.get("y") is not None:
+        selected_x = float(selected["x"])
+        selected_y = float(selected["y"])
+
+        if selected_x != center_x or selected_y != center_y:
+            save_view()
+            st.session_state.center_x = selected_x
+            st.session_state.center_y = selected_y
+            st.session_state.span_x *= 0.5
+            st.rerun()
 
 # MATHEMATICAL STATUS
 # ------------------------------------------------------------

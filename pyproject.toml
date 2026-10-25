@@ -22,6 +22,7 @@ dependencies = [
     "Pillow>=10.0",
     "matplotlib>=3.8",
     "streamlit>=1.40",
+    "plotly>=5.0",
 ]
 
 # Tools used during development and testing.
