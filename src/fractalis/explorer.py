@@ -460,6 +460,8 @@ chart_event = st.plotly_chart(
     selection_mode="points",
 )
 
+
+
 # Re-centre the view on a selected point and zoom in by 2x.
 if chart_event and chart_event.selection and chart_event.selection.points:
     selected = chart_event.selection.points[0]
