@@ -49,6 +49,7 @@ FRACTALIS_PALETTES = {
 }
 
 import streamlit as st
+from streamlit_plotly_events2 import plotly_events
 
 from fractalis.core import mandelbrot
 
@@ -397,37 +398,10 @@ fig = go.Figure(
 )
 
 
-# Add a denser, nearly invisible navigation layer.
-# Each selectable point maps to a real complex-plane coordinate.
-click_width = min(200, width)
-click_height = max(2, round(click_width * height / width))
-
-click_x = np.linspace(x_min, x_max, click_width)
-click_y = np.linspace(y_max, y_min, click_height)
-click_grid_x, click_grid_y = np.meshgrid(click_x, click_y)
-
-fig.add_trace(
-    go.Scattergl(
-        x=click_grid_x.ravel(),
-        y=click_grid_y.ravel(),
-        mode="markers",
-        marker={
-            "size": 12,
-            "color": "rgba(255,255,255,0.01)",
-        },
-        hoverinfo="skip",
-        showlegend=False,
-        name="Navigation points",
-    )
-)
-
-fig.update_layout(clickmode="event+select")
-
-
 # Style the graph and keep equal scales on both complex-plane axes.
 fig.update_layout(
     template="plotly_dark",
-    paper_bgcolor="rgba(0,0,0,0)",
+    paper_bgcolor="#090911",
     plot_bgcolor="#080810",
     height=700,
     margin={"l": 55, "r": 35, "t": 25, "b": 55},
@@ -446,34 +420,64 @@ fig.update_layout(
     },
 )
 
-# Display the graph and ask Streamlit to report selected scatter points.
+# ------------------------------------------------------------
+# INTERACTIVE FRACTAL DISPLAY
+# ------------------------------------------------------------
+# Use the verified updated Plotly event component as the only
+# renderer. Do not also call st.plotly_chart() for this figure:
+# rendering it twice would create duplicate charts and state.
+#
+# The key changes when the viewpoint changes. This gives each new
+# view a fresh component identity and prevents the previous click
+# from being replayed after the next zoom.
+
 canvas_key = (
-    f"mandelbrot_display_{center_x:.12g}_"
+    f"mandelbrot_click_{center_x:.12g}_"
     f"{center_y:.12g}_{span_x:.12g}"
 )
 
-chart_event = st.plotly_chart(
+clicked_points = plotly_events(
     fig,
-    use_container_width=True,
+    click_event=True,
+    select_event=False,
+    hover_event=False,
+    override_height=700,
+    override_width="100%",
     key=canvas_key,
-    on_select="rerun",
-    selection_mode="points",
 )
 
-# Re-centre the view on a selected point and zoom in by 2x.
-if chart_event and chart_event.selection and chart_event.selection.points:
-    selected = chart_event.selection.points[0]
+# ------------------------------------------------------------
+# CLICK-TO-ZOOM: MAP THE CLICK TO THE COMPLEX PLANE
+# ------------------------------------------------------------
+# Heatmap clicks return data coordinates. The x coordinate is the
+# real part of c, and the y coordinate is its imaginary part.
+#
+# Recalculate the fractal around the clicked location at twice
+# the magnification. Save the previous view so the Back button
+# can restore the previous centre and scale.
 
-    if selected.get("x") is not None and selected.get("y") is not None:
-        selected_x = float(selected["x"])
-        selected_y = float(selected["y"])
+if clicked_points:
+    selected = clicked_points[0]
 
-        if selected_x != center_x or selected_y != center_y:
-            save_view()
-            st.session_state.center_x = selected_x
-            st.session_state.center_y = selected_y
-            st.session_state.span_x *= 0.5
-            st.rerun()
+    selected_x = selected.get("x")
+    selected_y = selected.get("y")
+
+    if selected_x is not None and selected_y is not None:
+        selected_x = float(selected_x)
+        selected_y = float(selected_y)
+
+        # Reject invalid coordinates before changing session state.
+        if np.isfinite(selected_x) and np.isfinite(selected_y):
+            # Avoid redundant reruns for a click exactly at the centre.
+            if selected_x != center_x or selected_y != center_y:
+                save_view()
+
+                st.session_state.center_x = selected_x
+                st.session_state.center_y = selected_y
+                st.session_state.span_x *= 0.5
+
+                # Trigger a fresh calculation at the new coordinates.
+                st.rerun()
 
 # MATHEMATICAL STATUS
 # ------------------------------------------------------------
