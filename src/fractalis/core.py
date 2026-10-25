@@ -29,7 +29,7 @@ finite computation proves its orbit is bounded forever.
 from dataclasses import dataclass
 
 import numpy as np
-from numba import njit
+from numba import njit, prange
 from numpy.typing import NDArray
 
 
@@ -186,7 +186,7 @@ def complex_grid(
 # - Do not put Streamlit, Plotly, or session-state operations here.
 # - The public mandelbrot() function below remains the validated API.
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _mandelbrot_kernel(real, imag, max_iterations):
     """Calculate escape counts and smooth values using compiled loops."""
 
@@ -207,7 +207,7 @@ def _mandelbrot_kernel(real, imag, max_iterations):
     # Visit each pixel directly. Unlike the previous implementation,
     # this does not repeatedly allocate active-index arrays or copy
     # the active portions of the complex orbit array.
-    for row in range(height):
+    for row in prange(height):
         ci = imag[row]
 
         for column in range(width):

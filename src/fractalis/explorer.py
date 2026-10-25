@@ -46,6 +46,28 @@ FRACTALIS_PALETTES = {
         [0.92, "#ffc126"],
         [1.00, "#fff95e"],
     ],
+    # Aurora: cool teal, blue and violet tones with a bright mint highlight.
+    # These stops are interpolated by Plotly to create continuous gradients.
+    "aurora": [
+        [0.00, "#07111f"],
+        [0.16, "#123e59"],
+        [0.32, "#087e8b"],
+        [0.48, "#35b7a5"],
+        [0.64, "#7778c8"],
+        [0.82, "#c18bdf"],
+        [1.00, "#e5fff4"],
+    ],
+    # Electric: high-contrast navy, blue, magenta and gold.
+    # This offers a warmer, more dramatic alternative to the existing palettes.
+    "electric": [
+        [0.00, "#050510"],
+        [0.16, "#151a70"],
+        [0.32, "#164ee8"],
+        [0.48, "#00bcd4"],
+        [0.64, "#a52aff"],
+        [0.82, "#ff4f9a"],
+        [1.00, "#fff0a6"],
+    ],
 }
 
 import streamlit as st
@@ -239,7 +261,10 @@ with st.sidebar:
 
     st.selectbox(
         "Colour palette",
-        ["magma", "inferno", "viridis", "plasma", "turbo", "twilight"],
+        [
+            "magma", "inferno", "viridis", "plasma", "turbo", "twilight",
+            "aurora", "electric",
+        ],
         key="selected_palette",
     )
 
