@@ -1,0 +1,23 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+
+# Packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# Generated fractal images and numerical datasets
+output/
+*.png
+*.npy
+*.npz
+
+# Editor and operating-system files
+.vscode/
+.DS_Store
+Thumbs.db
