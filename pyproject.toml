@@ -31,6 +31,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+deepzoom = [
+    "mpmath>=1.3.0",
+]
 
 # This will let us run FRACTALIS from the terminal later.
 # We will create cli.py before using this command.

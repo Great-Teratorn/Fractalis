@@ -193,6 +193,9 @@ for key, default_value in DEFAULTS.items():
     if key not in st.session_state:
         st.session_state[key] = default_value
 
+# Avoid viewport widths where float64 coordinate precision becomes unreliable.
+MIN_SPAN_X = 1e-12
+
 
 # ------------------------------------------------------------
 # NAVIGATION FUNCTIONS
@@ -226,8 +229,12 @@ def zoom(factor):
     enlarge an existing raster image.
     """
 
+    new_span = st.session_state.span_x * factor
+    if new_span < MIN_SPAN_X:
+        st.warning("Maximum reliable zoom reached for the current numerical engine.")
+        return
     save_view()
-    st.session_state.span_x *= factor
+    st.session_state.span_x = new_span
 
 
 def reset_view():
@@ -280,9 +287,12 @@ with st.sidebar:
         ),
     )
 
+    # Higher sample counts can reveal finer structures at the same
+    # viewport size. They increase calculation time and memory usage,
+    # so retain 800 as the default for responsive everyday exploration.
     resolution = st.select_slider(
         "Horizontal resolution",
-        options=[400, 600, 800, 1000, 1200],
+        options=[400, 600, 800, 1000, 1200, 1600],
         value=800,
     )
 
@@ -348,6 +358,9 @@ height = max(1, round(width * 0.68))
 center_x = st.session_state.center_x
 center_y = st.session_state.center_y
 span_x = st.session_state.span_x
+if span_x < MIN_SPAN_X:
+    span_x = MIN_SPAN_X
+    st.session_state.span_x = span_x
 
 # ------------------------------------------------------------
 # ADAPTIVE ITERATION BUDGET
@@ -500,6 +513,7 @@ fig = go.Figure(
             x=x_values,
             y=y_values,
             z=colour_field,
+            zsmooth="fast",
             zmin=0.0 if boundary_shading else None,
             zmax=1.0 if boundary_shading else None,
             autocolorscale=False,
@@ -542,7 +556,6 @@ fig.update_layout(
         "gridcolor": "#242033",
         "zerolinecolor": "#65577c",
         "constrain": "domain",
-        
     },
     yaxis={
         "title": "Imaginary axis · Im(c)",
@@ -632,11 +645,14 @@ if (
 
         # Only treat a genuine inward rectangular zoom as a new view.
         if (
-            new_span_x < span_x
+            MIN_SPAN_X <= new_span_x < span_x
             and signature != st.session_state.get("_last_handled_box")
         ):
             st.session_state["_last_handled_box"] = signature
             save_view()
+            # Keep the viewport's aspect ratio consistent with the
+            # numerical image dimensions. Plotly's reported y range
+            # can differ from the intended range after axis constraints.
             st.session_state.center_x = (x0 + x1) / 2
             st.session_state.center_y = (y0 + y1) / 2
             st.session_state.span_x = new_span_x
@@ -667,6 +683,7 @@ elif clicked_points:
             if (
                 click_signature != last_handled_click
                 and (selected_x != center_x or selected_y != center_y)
+                and span_x > MIN_SPAN_X
             ):
                 # Record the event BEFORE changing the view. This ensures
                 # a rerun cannot process the same event a second time.
