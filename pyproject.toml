@@ -24,6 +24,7 @@ dependencies = [
     "streamlit>=1.40",
     "streamlit-plotly-events2==0.0.7",
     "plotly>=5.0",
+    "mpmath>=1.3.0",
 ]
 
 # Tools used during development and testing.
@@ -31,9 +32,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
-deepzoom = [
-    "mpmath>=1.3.0",
-]
+deepzoom = []
 
 # This will let us run FRACTALIS from the terminal later.
 # We will create cli.py before using this command.
