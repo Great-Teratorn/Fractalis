@@ -71,7 +71,8 @@ FRACTALIS_PALETTES = {
 }
 
 import streamlit as st
-from streamlit_plotly_events2 import plotly_events
+import json
+import streamlit_plotly_events2 as plotly_events2
 
 from fractalis.core import mandelbrot
 from fractalis.deep_zoom import deep_mandelbrot
