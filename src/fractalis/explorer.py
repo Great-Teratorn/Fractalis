@@ -71,7 +71,8 @@ FRACTALIS_PALETTES = {
 }
 
 import streamlit as st
-from streamlit_plotly_events2 import plotly_events
+import json
+import streamlit_plotly_events2 as plotly_events2
 
 from fractalis.core import mandelbrot
 from fractalis.deep_zoom import deep_mandelbrot
@@ -640,14 +641,19 @@ canvas_key = (
 # Avoiding a temporary preview and placeholder replacement prevents
 # the extra chart lifecycle that caused the visible transition.
 # Keep the component key stable so existing zoom-event handling works.
-clicked_points = plotly_events(
-    fig,
-    click_event=True,
-    select_event=False,
-    hover_event=False,
-    override_height=700,
-    override_width="100%",
-    key=canvas_key,
+clicked_points = json.loads(
+    plotly_events2._component_func(
+        plot_obj=fig.to_json(),
+        override_height=700,
+        override_width="100%",
+        config=json.dumps({}),
+        key=canvas_key,
+        relayout_event=True,
+        click_event=True,
+        select_event=False,
+        hover_event=False,
+        default="[]",
+    )
 )
 
 # ------------------------------------------------------------
