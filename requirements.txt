@@ -1,5 +1,5 @@
 streamlit
 plotly
-streamlit-plotly-events
+streamlit-plotly-events2==0.0.7
 numpy
 numba
