@@ -1,5 +1,8 @@
 streamlit
 plotly
 streamlit-plotly-events2==0.0.7
-numpy
+numpy>=2.0
 numba
+matplotlib>=3.8
+Pillow>=10.0
+mpmath>=1.3.0
