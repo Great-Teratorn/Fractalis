@@ -62,7 +62,7 @@ def test_result_arrays_are_consistent():
 
 
 def test_large_reference_render_is_rejected():
-    with pytest.raises(ValueError, match="4096 pixels"):
+    with pytest.raises(ValueError, match="8192 pixels"):
         deep_mandelbrot(width=100, height=100)
 
 

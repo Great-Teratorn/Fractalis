@@ -74,6 +74,8 @@ import streamlit as st
 from streamlit_plotly_events2 import plotly_events
 
 from fractalis.core import mandelbrot
+from fractalis.deep_zoom import deep_mandelbrot
+from fractalis.viewport import Viewport
 
 
 # ------------------------------------------------------------
@@ -175,6 +177,23 @@ def calculate_view(
     )
 
 
+@st.cache_data(max_entries=12, show_spinner=False)
+def calculate_deep_view(width, height, iterations, center_x, center_y, span_x):
+    """Cache a deep render by its exact decimal-string viewport.
+
+    Keeping the coordinate arguments as strings prevents Streamlit's cache
+    key from being based on rounded float approximations.
+    """
+    return deep_mandelbrot(
+        width=width,
+        height=height,
+        max_iterations=iterations,
+        center_x=center_x,
+        center_y=center_y,
+        span_x=span_x,
+    )
+
+
 # ------------------------------------------------------------
 # SESSION STATE
 # ------------------------------------------------------------
@@ -187,6 +206,10 @@ DEFAULTS = {
     "span_x": 3.2,
     "zoom_history": [],
     "selected_palette": "magma",
+    "render_mode": "Standard",
+    "deep_center_x": "-0.5",
+    "deep_center_y": "0",
+    "deep_span_x": "3.2",
 }
 
 for key, default_value in DEFAULTS.items():
@@ -201,48 +224,66 @@ MIN_SPAN_X = 1e-12
 # NAVIGATION FUNCTIONS
 # ------------------------------------------------------------
 
-def save_view():
-    """
-    Save the current viewpoint before changing it.
-
-    Each history entry contains the real centre coordinates and
-    horizontal span, allowing us to return to the exact prior view.
-    """
-
-    st.session_state.zoom_history.append(
-        (
-            st.session_state.center_x,
-            st.session_state.center_y,
-            st.session_state.span_x,
-        )
+def _deep_view():
+    """Read the canonical arbitrary-precision viewport from session state."""
+    return Viewport(
+        st.session_state.deep_center_x,
+        st.session_state.deep_center_y,
+        st.session_state.deep_span_x,
     )
 
 
+def _store_deep_view(view):
+    """Persist a viewport without converting its coordinates to floats."""
+    st.session_state.deep_center_x = view.center_x
+    st.session_state.deep_center_y = view.center_y
+    st.session_state.deep_span_x = view.span_x
+
+
+def save_view():
+    """Save the active viewport, retaining exact deep-mode coordinates."""
+    if st.session_state.render_mode == "Arbitrary precision":
+        view = _deep_view()
+        st.session_state.zoom_history.append(
+            ("deep", view.center_x, view.center_y, view.span_x)
+        )
+    else:
+        st.session_state.zoom_history.append(
+            ("standard", st.session_state.center_x,
+             st.session_state.center_y, st.session_state.span_x)
+        )
+
+
 def zoom(factor):
-    """
-    Zoom around the current centre.
-
-    A factor below 1 zooms in.
-    A factor above 1 zooms out.
-
-    This changes the coordinate window itself. It does not merely
-    enlarge an existing raster image.
-    """
+    """Zoom around the current centre using the active numerical model."""
+    if st.session_state.render_mode == "Arbitrary precision":
+        save_view()
+        # String factors keep navigation arithmetic out of binary floats.
+        factor_text = "0.5" if factor < 1 else "2"
+        _store_deep_view(_deep_view().zoom(factor_text))
+        return
 
     new_span = st.session_state.span_x * factor
     if new_span < MIN_SPAN_X:
-        st.warning("Maximum reliable zoom reached for the current numerical engine.")
+        st.warning(
+            "The standard renderer has reached its reliable coordinate "
+            "limit. Switch to Arbitrary precision to explore further."
+        )
         return
     save_view()
     st.session_state.span_x = new_span
 
 
 def reset_view():
-    """Return to the standard full Mandelbrot view."""
-
+    """Reset both engine viewports and clear navigation history."""
     st.session_state.center_x = -0.5
     st.session_state.center_y = 0.0
     st.session_state.span_x = 3.2
+
+    st.session_state.deep_center_x = "-0.5"
+    st.session_state.deep_center_y = "0"
+    st.session_state.deep_span_x = "3.2"
+
     st.session_state.zoom_history.clear()
 
 
@@ -265,6 +306,17 @@ st.markdown(
 
 with st.sidebar:
     st.header("EXPLORATION")
+
+    st.selectbox(
+        "Numerical engine",
+        ["Standard", "Arbitrary precision"],
+        key="render_mode",
+        help=(
+            "Standard mode uses the fast NumPy engine. "
+            "Arbitrary precision uses mpmath and decimal-string "
+            "coordinates for deep exploration."
+        ),
+    )
 
     st.selectbox(
         "Colour palette",
@@ -335,11 +387,26 @@ with right:
     if st.button("↶ Back", use_container_width=True):
         if st.session_state.zoom_history:
             previous = st.session_state.zoom_history.pop()
-            (
-                st.session_state.center_x,
-                st.session_state.center_y,
-                st.session_state.span_x,
-            ) = previous
+
+            # New history entries are tagged so standard and deep views
+            # retain their original representations.
+            if len(previous) == 4 and previous[0] == "deep":
+                _, cx, cy, span = previous
+                _store_deep_view(Viewport(cx, cy, span))
+            elif len(previous) == 4 and previous[0] == "standard":
+                _, cx, cy, span = previous
+                st.session_state.center_x = cx
+                st.session_state.center_y = cy
+                st.session_state.span_x = span
+            else:
+                # Accept older three-value history entries from sessions
+                # created before this integration patch.
+                (
+                    st.session_state.center_x,
+                    st.session_state.center_y,
+                    st.session_state.span_x,
+                ) = previous
+
 
 with reset:
     if st.button("⌂ Reset universe", use_container_width=True):
@@ -349,93 +416,73 @@ with reset:
 # ------------------------------------------------------------
 # MAP THE CURRENT VIEW TO COMPLEX-PLANE COORDINATES
 # ------------------------------------------------------------
-# The aspect ratio is preserved by deriving the vertical span
-# from the horizontal span and the requested image dimensions.
 
-width = resolution
-height = max(1, round(width * 0.68))
+deep_mode = st.session_state.render_mode == "Arbitrary precision"
 
-center_x = st.session_state.center_x
-center_y = st.session_state.center_y
-span_x = st.session_state.span_x
-if span_x < MIN_SPAN_X:
-    span_x = MIN_SPAN_X
+if deep_mode:
+    width, height = 64, 64
+    deep_center_x = st.session_state.deep_center_x
+    deep_center_y = st.session_state.deep_center_y
+    deep_span_x = st.session_state.deep_span_x
+    effective_iterations = iterations
+
+    with st.spinner("Calculating with arbitrary precision..."):
+        result = calculate_deep_view(
+            width,
+            height,
+            effective_iterations,
+            deep_center_x,
+            deep_center_y,
+            deep_span_x,
+        )
+
+    # Plot normalized local coordinates: absolute coordinates at deep
+    # zoom scales cannot safely be represented by browser-side numbers.
+    x_values = np.linspace(-0.5, 0.5, width)
+    y_half_span = height / (2.0 * width)
+    y_values = np.linspace(y_half_span, -y_half_span, height)
+
+    center_x, center_y, span_x = -0.5, 0.0, 1.0
+
+else:
+    width = resolution
+    height = max(1, round(width * 0.68))
+
+    center_x = st.session_state.center_x
+    center_y = st.session_state.center_y
+    span_x = max(MIN_SPAN_X, st.session_state.span_x)
     st.session_state.span_x = span_x
 
-# ------------------------------------------------------------
-# ADAPTIVE ITERATION BUDGET
-# ------------------------------------------------------------
-# The user's slider defines the base iteration budget. At the default
-# view, we use it unchanged so the initial render stays just as fast.
-#
-# As magnification increases, points near intricate boundaries often
-# need more recurrence steps before their orbits escape. Gradually
-# increasing the budget helps reveal these details at deeper zooms.
-#
-# Every doubling of magnification adds 0.25 to the multiplier, up to
-# 2.5x. The cap prevents the adaptive budget from growing without limit.
-# The effective value is passed into calculate_view(), so Streamlit's
-# cache continues to distinguish results calculated at different budgets.
-base_magnification = 3.2 / span_x
-zoom_levels = max(0.0, float(np.log2(max(1.0, base_magnification))))
+    if not np.isfinite(span_x) or span_x <= 0:
+        st.error("The requested zoom is outside the supported numerical range.")
+        st.stop()
 
-iteration_multiplier = min(
-    1.5,
-    1.0 + 0.10 * zoom_levels,
-)
-
-# Never exceed 4,000 iterations automatically, even if the slider's
-# base value is already high. The user's slider remains the minimum.
-effective_iterations = min(
-    4000,
-    max(iterations, round(iterations * iteration_multiplier)),
-)
-
-# Avoid requesting a zero-width region from floating-point underflow.
-if not np.isfinite(span_x) or span_x <= 0:
-    st.error("The requested zoom is outside the supported numerical range.")
-    st.stop()
-
-span_y = span_x * height / width
-
-x_min = center_x - span_x / 2
-x_max = center_x + span_x / 2
-y_min = center_y - span_y / 2
-y_max = center_y + span_y / 2
-
-
-# ------------------------------------------------------------
-# CALCULATE THE VIEW
-# ------------------------------------------------------------
-# The existing Mandelbrot engine does the actual mathematics.
-# The interface never substitutes decorative graphics for data.
-
-with st.spinner("Calculating the complex plane…"):
-    result = calculate_view(
-        width,
-        height,
-        effective_iterations,
-        x_min,
-        x_max,
-        y_min,
-        y_max,
+    base_magnification = 3.2 / span_x
+    zoom_levels = max(
+        0.0, float(np.log2(max(1.0, base_magnification)))
+    )
+    iteration_multiplier = min(1.5, 1.0 + 0.10 * zoom_levels)
+    effective_iterations = min(
+        4000, max(iterations, round(iterations * iteration_multiplier))
     )
 
+    span_y = span_x * height / width
+    x_min = center_x - span_x / 2
+    x_max = center_x + span_x / 2
+    y_min = center_y - span_y / 2
+    y_max = center_y + span_y / 2
 
-# ------------------------------------------------------------
+    with st.spinner("Calculating the complex plane..."):
+        result = calculate_view(
+            width, height, effective_iterations,
+            x_min, x_max, y_min, y_max,
+        )
 
-# ------------------------------------------------------------
+    x_values = np.linspace(x_min, x_max, width)
+    y_values = np.linspace(y_max, y_min, height)
 
-# ------------------------------------------------------------
 
-# ------------------------------------------------------------
-
-# ------------------------------------------------------------
 # BUILD AND DISPLAY THE FRACTAL
-# ------------------------------------------------------------
-# Convert the current complex-plane region into pixel coordinates.
-x_values = np.linspace(x_min, x_max, width)
-y_values = np.linspace(y_max, y_min, height)
 
 # Escaped points receive their smooth escape-time colour.
 # Points that did not escape are shown against the dark background.
@@ -552,13 +599,13 @@ fig.update_layout(
     
 
     xaxis={
-        "title": "Real axis · Re(c)",
+        "title": "Local real offset" if deep_mode else "Real axis · Re(c)",
         "gridcolor": "#242033",
         "zerolinecolor": "#65577c",
         "constrain": "domain",
     },
     yaxis={
-        "title": "Imaginary axis · Im(c)",
+        "title": "Local imaginary offset" if deep_mode else "Imaginary axis · Im(c)",
         "gridcolor": "#242033",
         "zerolinecolor": "#65577c",
         "scaleanchor": "x",
@@ -584,7 +631,10 @@ fig.update_layout(
 #
 # Because the component may retain its previous click event, the
 # handler below also records handled coordinates to prevent replay.
-canvas_key = "mandelbrot_click_canvas"
+canvas_key = (
+    f"mandelbrot_click_canvas_"
+    f"{st.session_state.get('_canvas_generation', 0)}"
+)
 
 # Render the completed figure directly, exactly once.
 # Avoiding a temporary preview and placeholder replacement prevents
@@ -602,6 +652,10 @@ clicked_points = plotly_events(
 )
 
 # ------------------------------------------------------------
+# Deep-mode axes are relative offsets, not absolute complex coordinates.
+# Preserve the returned click event and translate it with Decimal arithmetic
+# in the handler below. Never convert the absolute deep centre to float.
+
 # CLICK-TO-ZOOM: MAP THE CLICK TO THE COMPLEX PLANE
 # ------------------------------------------------------------
 # Heatmap clicks return data coordinates. The x coordinate is the
@@ -658,6 +712,48 @@ if (
             st.session_state.span_x = new_span_x
             st.rerun()
 
+elif deep_mode and clicked_points:
+    selected = clicked_points[0]
+    selected_x = selected.get("x")
+    selected_y = selected.get("y")
+
+    if selected_x is not None and selected_y is not None:
+        # Plotly's browser values are relative offsets. Convert their decimal
+        # text, multiply by the exact span, then add to the exact centre.
+        # This avoids ever constructing an absolute centre as a float.
+        try:
+            from decimal import Decimal, localcontext
+
+            dx_fraction = Decimal(str(selected_x))
+            dy_fraction = Decimal(str(selected_y))
+            current = _deep_view()
+
+            with localcontext() as ctx:
+                ctx.prec = max(
+                    80,
+                    len(current.center_x) + len(current.span_x) + 30,
+                    len(current.center_y) + len(current.span_x) + 30,
+                )
+                offset_x = dx_fraction * Decimal(current.span_x)
+                offset_y = dy_fraction * Decimal(current.span_x)
+
+            # A stable component may replay the previous click after reruns.
+            # Record the event before changing state to prevent duplicate zooms.
+            click_signature = (float(selected_x), float(selected_y))
+            last_handled_click = st.session_state.get("_last_handled_click")
+
+            if (
+                click_signature != last_handled_click
+                and (offset_x != 0 or offset_y != 0)
+            ):
+                st.session_state["_last_handled_click"] = click_signature
+                save_view()
+                moved = current.pan(str(offset_x), str(offset_y)).zoom("0.5")
+                _store_deep_view(moved)
+                st.rerun()
+        except (ValueError, ArithmeticError):
+            st.warning("That deep-zoom click could not be interpreted safely.")
+
 elif clicked_points:
     selected = clicked_points[0]
 
@@ -704,7 +800,7 @@ metric_a, metric_b, metric_c = st.columns(3)
 
 metric_a.metric(
     "Magnification",
-    f"{3.2 / span_x:.2e}×",
+    f"{3.2 / span_x:.2e}×" if not deep_mode else f"{3.2 / float(deep_span_x):.2e}×",
 )
 
 metric_b.metric(
@@ -722,11 +818,17 @@ metric_c.metric(
     ),
 )
 
-st.caption(
-    f"Current centre: {center_x:.12g} "
-    f"{center_y:+.12g}i · "
-    f"Horizontal span: {span_x:.6g}"
-)
+if deep_mode:
+    st.caption(
+        f"Arbitrary-precision centre: {deep_center_x} "
+        f"{deep_center_y}i · Horizontal span: {deep_span_x}"
+    )
+else:
+    st.caption(
+        f"Current centre: {center_x:.12g} "
+        f"{center_y:+.12g}i · "
+        f"Horizontal span: {span_x:.6g}"
+    )
 
 st.info(
     "Black areas indicate points that did not escape within the "
