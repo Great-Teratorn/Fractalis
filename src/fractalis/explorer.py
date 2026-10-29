@@ -645,7 +645,6 @@ clicked_points = plotly_events(
     click_event=True,
     select_event=False,
     hover_event=False,
-    relayout_event=True,
     override_height=700,
     override_width="100%",
     key=canvas_key,
