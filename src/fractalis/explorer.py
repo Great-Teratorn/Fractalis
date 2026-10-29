@@ -71,8 +71,7 @@ FRACTALIS_PALETTES = {
 }
 
 import streamlit as st
-import json
-import streamlit_plotly_events2 as plotly_events2
+from streamlit_plotly_events2 import plotly_events
 
 from fractalis.core import mandelbrot
 from fractalis.deep_zoom import deep_mandelbrot
@@ -646,7 +645,6 @@ clicked_points = plotly_events(
     click_event=True,
     select_event=False,
     hover_event=False,
-    relayout_event=True,
     override_height=700,
     override_width="100%",
     key=canvas_key,
