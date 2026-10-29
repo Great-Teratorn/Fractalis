@@ -11,6 +11,7 @@ from math import ceil, log10
 
 import mpmath as mp
 import numpy as np
+from numba import njit
 from numpy.typing import NDArray
 
 
@@ -40,6 +41,37 @@ def _decimal_value(name: str, value: str) -> Decimal:
     return result
 
 
+def _working_precision(center_x: str, center_y: str, span_x: str) -> int:
+    """Choose precision from both the absolute centre and requested span.
+
+    The span determines how many decimal places are needed to distinguish
+    neighbouring samples. The centre determines how many significant digits
+    must survive when tiny offsets are added to a nonzero coordinate.
+    Guard digits protect intermediate coordinate and orbit calculations.
+    """
+    cx = _decimal_value("center_x", center_x)
+    cy = _decimal_value("center_y", center_y)
+    span = _decimal_value("span_x", span_x)
+
+    if span <= 0:
+        raise ValueError("span_x must be positive.")
+
+    # Account for long decimal centres as well as a tiny viewport around
+    # a centre whose magnitude is much larger than the viewport span.
+    centre_digits = max(
+        len(cx.as_tuple().digits),
+        len(cy.as_tuple().digits),
+        1,
+    )
+    separation_digits = max(
+        0,
+        cx.adjusted() - span.adjusted() if cx else 0,
+        cy.adjusted() - span.adjusted() if cy else 0,
+    )
+
+    return max(50, centre_digits + 30, separation_digits + 40)
+
+
 def deep_coordinate_grid(
     width: int,
     height: int,
@@ -63,9 +95,10 @@ def deep_coordinate_grid(
     if span_d <= 0:
         raise ValueError("span_x must be positive.")
 
-    # Base precision on the requested scale, with guard digits for
-    # arithmetic around the centre. Never convert the coordinates to float.
-    precision = max(50, ceil(-span_d.adjusted()) + 30 if span_d < 1 else 50)
+    # Derive precision from both the centre's significant digits and
+    # the span. A tiny span around a long decimal centre needs enough
+    # working digits to retain the distinction between adjacent samples.
+    precision = _working_precision(center_x, center_y, span_x)
 
     with mp.workdps(precision):
         cx = mp.mpf(str(cx_d))
@@ -83,6 +116,43 @@ def deep_coordinate_grid(
             return list(reversed(values)) if reverse else values
 
         return axis(cx, sx, width), axis(cy, sy, height, reverse=True)
+
+
+
+@njit(cache=True)
+def _fast_orbit_kernel(xs, ys, max_iterations):
+    """Compiled escape-time calculation for safely representable coordinates."""
+    height = len(ys)
+    width = len(xs)
+    counts = np.zeros((height, width), dtype=np.int32)
+    smooth = np.full((height, width), np.nan, dtype=np.float64)
+
+    log_two = np.log(2.0)
+
+    for row in range(height):
+        ci = ys[row]
+        for column in range(width):
+            cr = xs[column]
+            zr = 0.0
+            zi = 0.0
+
+            for iteration in range(1, max_iterations + 1):
+                old_zr = zr
+                old_zi = zi
+                zr = old_zr * old_zr - old_zi * old_zi + cr
+                zi = 2.0 * old_zr * old_zi + ci
+                magnitude_squared = zr * zr + zi * zi
+
+                if magnitude_squared > 4.0:
+                    counts[row, column] = iteration
+                    magnitude = np.sqrt(magnitude_squared)
+                    smooth[row, column] = (
+                        iteration + 1.0
+                        - np.log(np.log(magnitude)) / log_two
+                    )
+                    break
+
+    return counts, smooth
 
 
 def deep_mandelbrot(
@@ -114,48 +184,56 @@ def deep_mandelbrot(
     )
 
     # Avoid accidentally launching a very expensive pure-Python calculation.
-    if width * height > 4096:
+    if width * height > 8192:
         raise ValueError(
-            "Reference deep-zoom engine is limited to 4096 pixels per call."
+            "Reference deep-zoom engine is limited to 8192 pixels per call."
         )
 
-    precision = max(
-        50,
-        ceil(-_decimal_value("span_x", span_x).adjusted()) + 30
-        if _decimal_value("span_x", span_x) < 1
-        else 50,
+    # Only use the compiled float64 kernel when the viewport has enough
+    # separation between adjacent samples to remain numerically meaningful.
+    span_decimal = _decimal_value("span_x", span_x)
+    precision = _working_precision(center_x, center_y, span_x)
+
+    safe_float_view = (
+        span_decimal >= Decimal("1e-12")
+        and abs(_decimal_value("center_x", center_x)) < Decimal("1e6")
+        and abs(_decimal_value("center_y", center_y)) < Decimal("1e6")
     )
 
-    counts = np.zeros((height, width), dtype=np.int32)
-    smooth = np.full((height, width), np.nan, dtype=np.float64)
+    if safe_float_view:
+        xs_float = np.asarray([float(x) for x in xs], dtype=np.float64)
+        ys_float = np.asarray([float(y) for y in ys], dtype=np.float64)
+        counts, smooth = _fast_orbit_kernel(
+            xs_float, ys_float, max_iterations
+        )
+    else:
+        counts = np.zeros((height, width), dtype=np.int32)
+        smooth = np.full((height, width), np.nan, dtype=np.float64)
 
-    with mp.workdps(precision):
-        four = mp.mpf(4)
-        log_two = mp.log(2)
+        with mp.workdps(precision):
+            four = mp.mpf(4)
+            log_two = mp.log(2)
 
-        for row, ci in enumerate(ys):
-            for column, cr in enumerate(xs):
-                zr = mp.mpf(0)
-                zi = mp.mpf(0)
+            for row, ci in enumerate(ys):
+                for column, cr in enumerate(xs):
+                    zr = mp.mpf(0)
+                    zi = mp.mpf(0)
 
-                for iteration in range(1, max_iterations + 1):
-                    old_zr = zr
-                    old_zi = zi
+                    for iteration in range(1, max_iterations + 1):
+                        old_zr = zr
+                        old_zi = zi
+                        zr = old_zr * old_zr - old_zi * old_zi + cr
+                        zi = 2 * old_zr * old_zi + ci
+                        magnitude_squared = zr * zr + zi * zi
 
-                    zr = old_zr * old_zr - old_zi * old_zi + cr
-                    zi = 2 * old_zr * old_zi + ci
-
-                    magnitude_squared = zr * zr + zi * zi
-
-                    if magnitude_squared > four:
-                        counts[row, column] = iteration
-                        magnitude = mp.sqrt(magnitude_squared)
-                        value = (
-                            iteration + 1
-                            - mp.log(mp.log(magnitude)) / log_two
-                        )
-                        smooth[row, column] = float(value)
-                        break
+                        if magnitude_squared > four:
+                            counts[row, column] = iteration
+                            magnitude = mp.sqrt(magnitude_squared)
+                            smooth[row, column] = float(
+                                iteration + 1
+                                - mp.log(mp.log(magnitude)) / log_two
+                            )
+                            break
 
     return DeepFractalResult(
         escape_iterations=counts,

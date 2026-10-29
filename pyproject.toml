@@ -22,7 +22,7 @@ dependencies = [
     "Pillow>=10.0",
     "matplotlib>=3.8",
     "streamlit>=1.40",
-    "streamlit-plotly-events2>=0.0.7",
+    "streamlit-plotly-events2==0.0.7",
     "plotly>=5.0",
 ]
 
