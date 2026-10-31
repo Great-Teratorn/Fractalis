@@ -659,7 +659,6 @@ clicked_points = plotly_events(
     click_event=True,
     select_event=False,
     hover_event=False,
-    relayout_event=True,
     override_height=700,
     override_width="100%",
     key=canvas_key,
@@ -679,54 +678,9 @@ clicked_points = plotly_events(
 # the magnification. Save the previous view so the Back button
 # can restore the previous centre and scale.
 
-if (
-    isinstance(clicked_points, dict)
-    and clicked_points.get("event") == "relayout"
-):
-    data = clicked_points.get("data", {})
 
-    def get_axis_range(axis):
-        pair = data.get(f"{axis}.range")
-        if pair is None:
-            low = data.get(f"{axis}.range[0]")
-            high = data.get(f"{axis}.range[1]")
-            if low is not None and high is not None:
-                pair = [low, high]
-        if pair is None or len(pair) != 2:
-            return None
-        try:
-            values = sorted((float(pair[0]), float(pair[1])))
-        except (TypeError, ValueError):
-            return None
-        if not all(np.isfinite(v) for v in values):
-            return None
-        return values if values[1] > values[0] else None
 
-    xr = get_axis_range("xaxis")
-    yr = get_axis_range("yaxis")
-
-    if xr is not None and yr is not None:
-        x0, x1 = xr
-        y0, y1 = yr
-        new_span_x = x1 - x0
-        signature = (x0, x1, y0, y1)
-
-        # Only treat a genuine inward rectangular zoom as a new view.
-        if (
-            MIN_SPAN_X <= new_span_x < span_x
-            and signature != st.session_state.get("_last_handled_box")
-        ):
-            st.session_state["_last_handled_box"] = signature
-            save_view()
-            # Keep the viewport's aspect ratio consistent with the
-            # numerical image dimensions. Plotly's reported y range
-            # can differ from the intended range after axis constraints.
-            st.session_state.center_x = (x0 + x1) / 2
-            st.session_state.center_y = (y0 + y1) / 2
-            st.session_state.span_x = new_span_x
-            st.rerun()
-
-elif deep_mode and clicked_points:
+if deep_mode and clicked_points:
     selected = clicked_points[0]
     selected_x = selected.get("x")
     selected_y = selected.get("y")
