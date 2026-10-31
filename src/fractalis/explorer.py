@@ -23,6 +23,10 @@ import plotly.graph_objects as go
 
 # Use Plotly's established scientific colour maps directly.
 # These are separate, predefined gradients rather than approximations.
+
+
+import plotly.express as px
+
 import plotly.colors as plotly_colors
 
 FRACTALIS_PALETTES = {
@@ -318,13 +322,23 @@ with st.sidebar:
         ),
     )
 
+       # Expose every built-in Plotly colour scale and its reverse.
+    # Keep FRACTALIS's custom palettes available as well.
+    builtin_palettes = px.colors.named_colorscales()
+
+    palette_options = sorted(
+        set(
+            builtin_palettes
+            + [f"{name}_r" for name in builtin_palettes]
+            + list(FRACTALIS_PALETTES.keys())
+        )
+    )
+
     st.selectbox(
         "Colour palette",
-        [
-            "magma", "inferno", "viridis", "plasma", "turbo", "twilight",
-            "aurora", "electric",
-        ],
+        palette_options,
         key="selected_palette",
+        help="Choose from the full colour collection. Scales ending in _r run in reverse.",
     )
 
     # Optional lighting effect derived from the calculated fractal.
